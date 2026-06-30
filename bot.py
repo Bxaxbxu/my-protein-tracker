@@ -37,31 +37,9 @@ def get_db():
 
 def init_db():
     conn = get_db()
-    conn.run(
-        """
-        CREATE TABLE IF NOT EXISTS entries (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,    conn = get_db()
-    conn.run(
-        """
-        CREATE TABLE IF NOT EXISTS entries (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            amount REAL NOT NULL,
-            note TEXT,
-            entry_date DATE NOT NULL,
-            created_at TIMESTAMP NOT NULL
-        )
-        """
-    )
-    conn.run(
-        """
-        CREATE TABLE IF NOT EXISTS goals (
-            user_id BIGINT PRIMARY KEY,
-            goal REAL NOT NULL
-        )
-        """
-    )
+    conn.run("CREATE TABLE IF NOT EXISTS entries (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, amount REAL NOT NULL, note TEXT, entry_date DATE NOT NULL, created_at TIMESTAMP NOT NULL)")
+    conn.run("CREATE TABLE IF NOT EXISTS goals (user_id BIGINT PRIMARY KEY, goal REAL NOT NULL)")
+    conn.run("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, chat_id BIGINT NOT NULL)")
     conn.close()
 
 
@@ -106,8 +84,7 @@ def get_goal(user_id: int) -> float:
 def set_goal(user_id: int, goal: float):
     conn = get_db()
     conn.run(
-        "INSERT INTO goals (user_id, goal) VALUES (:user_id, :goal) "
-        "ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal",
+        "INSERT INTO goals (user_id, goal) VALUES (:user_id, :goal) ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal",
         user_id=user_id, goal=goal,
     )
     conn.close()
@@ -125,6 +102,22 @@ def undo_last(user_id: int) -> bool:
     conn.run("DELETE FROM entries WHERE id = :id", id=rows[0][0])
     conn.close()
     return True
+
+
+def register_user(user_id: int, chat_id: int):
+    conn = get_db()
+    conn.run(
+        "INSERT INTO users (user_id, chat_id) VALUES (:user_id, :chat_id) ON CONFLICT (user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id",
+        user_id=user_id, chat_id=chat_id,
+    )
+    conn.close()
+
+
+def get_all_user_chat_ids():
+    conn = get_db()
+    rows = conn.run("SELECT user_id, chat_id FROM users")
+    conn.close()
+    return [(r[0], r[1]) for r in rows]
 
 
 ENTRY_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*g?\s*(.*)$", re.IGNORECASE)
@@ -159,7 +152,38 @@ def build_progress_message(user_id: int, amount_added: float, note: str | None) 
     return "\n".join(lines)
 
 
+def build_daily_summary_message(user_id: int) -> str:
+    today = date.today().isoformat()
+    total = get_total_for_date(user_id, today)
+    goal = get_goal(user_id)
+    remaining = max(goal - total, 0)
+    bar = progress_bar(total, goal)
+    pct = min(100, round(100 * total / goal)) if goal > 0 else 0
+
+    lines = [
+        "🌙 Daily Protein Summary",
+        "",
+        f"Today's total: {total:g}g / {goal:g}g",
+        f"{bar} {pct}%",
+    ]
+    if remaining > 0:
+        lines.append(f"You still need {remaining:g}g to hit your goal today.")
+    else:
+        lines.append("🎉 You hit your goal today!")
+    return "\n".join(lines)
+
+
+async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE):
+    for user_id, chat_id in get_all_user_chat_ids():
+        try:
+            msg = build_daily_summary_message(user_id)
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            print(f"Failed to send summary to user {user_id}: {e}")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_user(update.effective_user.id, update.effective_chat.id)
     await update.message.reply_text(
         "👋 Protein Tracker Bot\n\n"
         "Just send me how much protein you ate:\n"
@@ -169,7 +193,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today - show today's log and total\n"
         "/goal 150 - set your daily protein goal (g)\n"
         "/undo - remove your last entry\n"
-        "/reset - clear today's entries\n",
+        "/reset - clear today's entries\n\n"
+        "I'll also send you a daily summary at 11pm SGT.",
         parse_mode="Markdown",
     )
 
@@ -240,44 +265,10 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_user(update.effective_user.id, update.effective_chat.id)
     text = update.message.text.strip()
     match = ENTRY_PATTERN.match(text)
 
     if not match:
         await update.message.reply_text(
-            "I didn't understand that. Send a number like `30` or `30 chicken breast`.",
-            parse_mode="Markdown",
-        )
-        return
-
-    amount = float(match.group(1))
-    note = match.group(2).strip() or None
-    user_id = update.effective_user.id
-
-    add_entry(user_id, amount, note)
-    msg = build_progress_message(user_id, amount, note)
-    await update.message.reply_text(msg)
-
-
-def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise RuntimeError("Set the TELEGRAM_BOT_TOKEN environment variable")
-
-    init_db()
-
-    app = Application.builder().token(token).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("goal", set_goal_cmd))
-    app.add_handler(CommandHandler("today", today_cmd))
-    app.add_handler(CommandHandler("undo", undo_cmd))
-    app.add_handler(CommandHandler("reset", reset_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Bot is running...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+            "I didn't understand that. Send a
