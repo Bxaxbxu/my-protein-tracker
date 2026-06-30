@@ -1,7 +1,8 @@
 import os
 import re
-from datetime import datetime, date
+from datetime import datetime, date, time
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import pg8000.native
 from telegram import Update
@@ -15,6 +16,7 @@ from telegram.ext import (
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 DEFAULT_GOAL = int(os.environ.get("DEFAULT_GOAL_G", "150"))
+SGT = ZoneInfo("Asia/Singapore")
 
 
 def _parse_db_url(url: str):
@@ -35,6 +37,11 @@ def get_db():
 
 def init_db():
     conn = get_db()
+    conn.run(
+        """
+        CREATE TABLE IF NOT EXISTS entries (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,    conn = get_db()
     conn.run(
         """
         CREATE TABLE IF NOT EXISTS entries (
